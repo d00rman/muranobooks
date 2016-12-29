@@ -4,6 +4,7 @@
 require 'yaml'
 
 require './lib/record'
+require './lib/year'
 
 
 config = YAML.load File.read( File.expand_path( File.join( File.dirname( __FILE__ ), 'config.yaml' ) ) )
@@ -13,19 +14,31 @@ data = YAML.load File.read( File.expand_path( File.join( File.dirname( __FILE__ 
 data[:templates].each { |name, hash| Books::BalanceSheet::Record.add_template name, hash }
 records = data[:flow].map { |hash| Books::BalanceSheet::Record.new hash }.sort { |a, b| a.ts <=> b.ts }
 
+
+# year-lib-based vars
+lib_year = {}
+#
+
 balance = Hash.new
 
 records.each do |rec|
   year = rec.ts.year
   month = rec.ts.month
   balance[year] ||= Hash.new
+  lib_year[year] ||= Books::BalanceSheet::Year.new year, config
+  lib_year[year].add_record rec
   bal = balance[year][month] ||= Books::BalanceSheet::Record.new_balance
   rec.to_hash[:balance].each { |k, v| bal[k] += v }
 end
 
 last_month = 12
 last_year = balance.keys.sort.pop
-curr = balance[last_year].merge! Hash.new
+
+lib_year[last_year].set_as_active
+lib_year.keys.sort.each { |year| lib_year[year].set_next( lib_year[year + 1] ) if lib_year[year + 1] }
+lib_year[lib_year.keys.sort.shift].calculate true
+
+curr = balance[last_year].merge Hash.new
 call = curr[:all] = Books::BalanceSheet::Record.new_balance
 blast = balance[last_year] = {}
 ( 1..12 ).each do |month|
@@ -79,6 +92,7 @@ balance.each do |year, bals|
   end
   bal[:taxable] -= annual
   bal[:expense] += annual
+  bal[:annual] = annual
   bal[:taxes] = {}
   taxes = 0.0
   config[:tax].sort { |a, b| a[:from] <=> b[:from] }.each do |tax|
@@ -98,15 +112,18 @@ balance.each do |year, bals|
 end
 
 call[:taxes] = blast[:all][:taxes] * last_month / 12.0
-call[:net_total] = call[:net_total] + call[:taxable] - call[:taxes]
+call[:annual] = blast[:all][:annual] * last_month / 12.0
+call[:net_total] = call[:net_total] + call[:taxable] - call[:taxes] - call[:annual]
 call[:net_free] = call[:net_total] - call[:net_out]
 
-blast[:all] = call
+blast[:all].merge! call
 
 balance.each do |year, bals|
-  puts "[*] #{year} [*]"
+  lyear = lib_year[year]
+  puts "[*] #{year} - script | lib_year | eq [*]"
   bals[:all].each do |key, val|
-    puts "    #{key} => #{val}"
+    ly_val = lyear.all[key]
+    puts "    #{key}:  #{val}  |  #{ly_val}  |  #{( ( val - ly_val ) * 1000 ).to_i == 0 ? 'YES' : 'NO'}"
   end
   puts
 end
